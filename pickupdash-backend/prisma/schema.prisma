@@ -11,4 +11,115 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String           @id @default(uuid()) @db.Uuid
+  email           String           @unique
+  passwordHash    String           @map("password_hash")
+  lastSyncedAt    DateTime?        @map("last_synced_at") @db.Timestamptz
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  refreshTokens    RefreshToken[]
+  platformAccounts PlatformAccount[]
+  emailAccounts    EmailAccount[]
+  orders           Order[]
+  packages         Package[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model PlatformAccount {
+  id                      String    @id @default(uuid()) @db.Uuid
+  userId                  String    @map("user_id") @db.Uuid
+  encryptedAccessToken    String    @map("encrypted_access_token")
+  encryptedRefreshToken   String?   @map("encrypted_refresh_token")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("platform_accounts")
+}
+
+model EmailAccount {
+  id                      String    @id @default(uuid()) @db.Uuid
+  userId                  String    @map("user_id") @db.Uuid
+  provider                String    // "gmail" | "outlook" | "hotmail" | "yahoo"
+  emailAddress            String    @map("email_address")
+
+  // OAuth
+  encryptedAccessToken    String?   @map("encrypted_access_token")
+  encryptedRefreshToken   String?   @map("encrypted_refresh_token")
+  expiresAt               DateTime? @map("expires_at") @db.Timestamptz
+
+  // IMAP credentials
+  encryptedPassword      String?   @map("encrypted_password")
+
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_accounts")
+}
+
+model Order {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  conversationId  BigInt    @map("conversation_id") @db.BigInt
+  transactionId   BigInt    @unique @map("transaction_id") @db.BigInt
+  title           String
+  priceAmount     Decimal   @map("price_amount") @db.Decimal(10, 2)
+  priceCurrency   String    @default("EUR") @map("price_currency") @db.Char(3)
+  itemPhotoUrl    String?   @map("item_photo_url")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  packages        Package[]
+
+  @@map("orders")
+}
+
+model Package {
+  id                  String     @id @default(uuid()) @db.Uuid
+  userId              String     @map("user_id") @db.Uuid
+  orderId             String?    @map("order_id") @db.Uuid
+
+  trackingCode        String     @map("tracking_code")
+  carrierCode         String     @map("carrier_code")
+  trackingUrl         String?    @map("tracking_url")
+  carrierLogoUrl      String?    @map("carrier_logo_url")
+
+  lockerName          String     @map("locker_name")
+  lockerAddress       String     @map("locker_address")
+  lockerPostalCode    String?    @map("locker_postal_code")
+  lockerCity          String?    @map("locker_city")
+
+  retrievalCode       String?    @map("retrieval_code")
+  qrCodeData          String?    @map("qr_code_data")
+
+  status              String
+  expiryDate          DateTime?  @map("expiry_date") @db.Timestamptz // pas fiable à voir comment faire si on peut avoir la date du mail ou via l'API ?
+
+  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order               Order?     @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@map("packages")
 }
