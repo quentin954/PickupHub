@@ -2,6 +2,9 @@ import { prisma } from '../config/database';
 import { PackageQueryInput, UpdatePackageInput } from '../dto/packages.dto';
 import { BadRequestError, NotFoundError, ForbiddenError } from '../errors/errors';
 import { log } from '../utils/logger';
+import { decrypt, encrypt } from '../utils/crypto';
+import { PlatformService } from './platform.service';
+import jwt from 'jsonwebtoken';
 
 export class PackageService {
   static async getPackages(userId: string, query: PackageQueryInput) {
@@ -90,7 +93,142 @@ export class PackageService {
 
     log('info', 'Starting package synchronization', { userId });
 
-    // TODO: Implement API call to external platform to fetch packages
+    let accessToken = decrypt(platformAccount.encryptedAccessToken);
+    const decodedToken = jwt.decode(accessToken) as { exp?: number } | null;
+
+    if (decodedToken?.exp && decodedToken.exp * 1000 < Date.now()) {
+      log('info', 'Access token expired, refreshing', { userId });
+      const refreshedTokens = await PlatformService.refreshToken(
+        decrypt(platformAccount.encryptedRefreshToken || '')
+      );
+      accessToken = refreshedTokens.access_token;
+
+      await prisma.platformAccount.update({
+        where: { userId },
+        data: {
+          encryptedAccessToken: encrypt(accessToken),
+          encryptedRefreshToken: encrypt(refreshedTokens.refresh_token),
+        },
+      });
+    }
+
+    let orders;
+    try {
+      orders = await PlatformService.getOrders(accessToken);
+      log('info', `Received ${orders.my_orders?.length || 0} orders from platform`, { userId });
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes('401')) {
+        log('info', '401 received, refreshing token and retrying', { userId });
+        const refreshedTokens = await PlatformService.refreshToken(
+          decrypt(platformAccount.encryptedRefreshToken || '')
+        );
+        accessToken = refreshedTokens.access_token;
+
+        await prisma.platformAccount.update({
+          where: { userId },
+          data: {
+            encryptedAccessToken: encrypt(accessToken),
+            encryptedRefreshToken: encrypt(refreshedTokens.refresh_token),
+          },
+        });
+
+        orders = await PlatformService.getOrders(accessToken);
+        log('info', `Received ${orders.my_orders?.length || 0} orders after retry`, { userId });
+      } else {
+        throw error;
+      }
+    }
+
+    for (const order of orders.my_orders || []) {
+      let existingOrder = await prisma.order.findUnique({
+        where: { transactionId: BigInt(order.transaction_id) },
+      });
+
+      if (!existingOrder) {
+        existingOrder = await prisma.order.create({
+          data: {
+            userId,
+            conversationId: BigInt(order.conversation_id),
+            transactionId: BigInt(order.transaction_id),
+            title: order.title,
+            priceAmount: order.price.amount,
+            priceCurrency: order.price.currency_code,
+            itemPhotoUrl: order.photo?.url ?? null,
+          },
+        });
+      }
+
+      let shipmentInfo;
+      try {
+        shipmentInfo = await PlatformService.getShipmentInformation(
+          accessToken,
+          order.transaction_id.toString()
+        );
+      } catch (error: unknown) {
+        if (error instanceof Error && error.message.includes('401')) {
+          log('info', '401 received for shipment, refreshing token', { userId });
+          const refreshedTokens = await PlatformService.refreshToken(
+            decrypt(platformAccount.encryptedRefreshToken || '')
+          );
+          accessToken = refreshedTokens.access_token;
+
+          await prisma.platformAccount.update({
+            where: { userId },
+            data: {
+              encryptedAccessToken: encrypt(accessToken),
+              encryptedRefreshToken: encrypt(refreshedTokens.refresh_token),
+            },
+          });
+
+          shipmentInfo = await PlatformService.getShipmentInformation(
+            accessToken,
+            order.transaction_id.toString()
+          );
+        } else {
+          throw error;
+        }
+      }
+
+      const existingPackage = await prisma.package.findFirst({
+        where: { orderId: existingOrder.id },
+      });
+
+      if (
+        existingPackage &&
+        shipmentInfo.journey_summary?.status === 'delivered' &&
+        existingPackage.status !== 'delivered'
+      ) {
+        await prisma.package.update({
+          where: { id: existingPackage.id },
+          data: { status: 'delivered' },
+        });
+      }
+
+      if (shipmentInfo.journey_summary?.status === 'available_for_pickup') {
+        const trackingCode = shipmentInfo.journey_summary.current_carrier?.tracking_code?.slice(0, -2) ||
+          shipmentInfo.journey_summary.current_carrier?.tracking_code ||
+          '';
+        const carrierCode = shipmentInfo.journey_summary.current_carrier?.code;
+
+        if (!trackingCode || !carrierCode) {
+          continue;
+        }
+
+        log('info', `Order ${order.transaction_id} is available for pickup`, {
+          trackingCode,
+          carrierCode,
+          userId,
+        });
+
+        if (existingPackage && existingPackage.status === 'available_for_pickup') {
+          continue;
+        }
+
+        //
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
 
     await prisma.user.update({
       where: { id: userId },

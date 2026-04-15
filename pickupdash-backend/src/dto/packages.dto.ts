@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { PAGINATION } from '../constants/defaults';
 
 export const packageQuerySchema = z.object({
-  page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(10),
+  page: z.coerce.number().int().positive().default(PAGINATION.DEFAULT_PAGE),
+  limit: z.coerce.number().int().positive().max(PAGINATION.MAX_LIMIT).default(PAGINATION.DEFAULT_LIMIT),
   status: z.string().optional(),
 });
 
