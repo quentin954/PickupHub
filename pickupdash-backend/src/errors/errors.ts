@@ -97,3 +97,16 @@ export class ConflictError extends CustomError {
     return [{ message: this.message, code: this.errorCode }];
   }
 }
+
+export class InternalServerError extends CustomError {
+  statusCode = 500;
+  errorCode = 'INTERNAL_SERVER_ERROR';
+
+  constructor(public override message: string = 'Internal server error.') {
+    super(message);
+  }
+
+  serializeErrors() {
+    return [{ message: this.message, code: this.errorCode }];
+  }
+}

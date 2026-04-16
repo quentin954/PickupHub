@@ -5,8 +5,8 @@ import { PLATFORM_API_URL, PLATFORM_USER_AGENT, PLATFORM_DEVICE_UUID } from '../
 import { NotFoundError } from '../errors/errors';
 
 const PLATFORM_HEADERS = {
-  'User-Agent': PLATFORM_USER_AGENT,
-  'X-Device-UUID': PLATFORM_DEVICE_UUID,
+  'User-Agent': PLATFORM_USER_AGENT || '',
+  'X-Device-UUID': PLATFORM_DEVICE_UUID || '',
 };
 
 interface Order {

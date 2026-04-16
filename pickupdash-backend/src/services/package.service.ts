@@ -44,7 +44,7 @@ export class PackageService {
       select: { lastSyncedAt: true },
     });
 
-    const data = packages.map(pkg => ({
+    const data = packages.map((pkg: any) => ({
       id: pkg.id,
       orderId: pkg.orderId,
       trackingCode: pkg.trackingCode,
