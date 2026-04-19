@@ -22,4 +22,5 @@ export const IMAP_CONFIG = {
   outlook: { host: 'outlook.office365.com', port: 993 },
   hotmail: { host: 'outlook.office365.com', port: 993 },
   yahoo: { host: 'imap.mail.yahoo.com', port: 993 },
+  gmail: { host: 'imap.gmail.com', port: 993 },
 };

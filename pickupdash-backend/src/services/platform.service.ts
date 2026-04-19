@@ -20,7 +20,12 @@ interface Order {
 interface ShipmentInfo {
   journey_summary?: {
     status: string;
-    current_carrier?: { code: string; tracking_code: string };
+    current_carrier?: {
+      code: string;
+      tracking_code: string;
+      tracking_url?: string;
+      logo_url?: string;
+    };
   };
 }
 

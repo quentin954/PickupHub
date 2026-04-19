@@ -1,9 +1,11 @@
 import { ImapFlow } from 'imapflow';
 import { google } from 'googleapis';
 import { prisma } from '../config/database';
-import { encrypt } from '../utils/crypto';
+import { encrypt, decrypt } from '../utils/crypto';
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, IMAP_CONFIG } from '../config/config';
 import { NotFoundError, BadRequestError, InternalServerError } from '../errors/errors';
+import { parseChronopostEmail, parseMondialRelayEmail, parseVintedGoEmail } from '../parsers';
+import type { ParsedPackageData } from '../types/email-parser.types';
 
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
@@ -129,5 +131,113 @@ export const EmailService = {
     await prisma.emailAccount.delete({ where: { userId } });
 
     return { message: 'Email account unlinked successfully.' };
+  },
+
+  async searchEmails(
+    userId: string,
+    trackingCode: string
+  ): Promise<{ emails: Array<{ id: string; subject: string; from: string; date: string; html: string }> }> {
+    const emailAccount = await prisma.emailAccount.findUnique({ where: { userId } });
+
+    if (!emailAccount) {
+      return { emails: [] };
+    }
+
+    const emails: Array<{ id: string; subject: string; from: string; date: string; html: string }> = [];
+
+    let imapClient: ImapFlow;
+
+    if (emailAccount.provider === 'gmail') {
+      const accessToken = decrypt(emailAccount.encryptedAccessToken || '');
+
+      if (emailAccount.expiresAt && new Date(emailAccount.expiresAt) < new Date()) {
+        const newTokens = await this.refreshGmailToken(decrypt(emailAccount.encryptedRefreshToken || ''));
+        await prisma.emailAccount.update({
+          where: { userId },
+          data: {
+            encryptedAccessToken: encrypt(newTokens.access_token),
+            expiresAt: new Date(newTokens.expiry_date),
+          },
+        });
+      }
+
+      imapClient = new ImapFlow({
+        host: 'imap.gmail.com',
+        port: 993,
+        secure: true,
+        auth: { user: emailAccount.emailAddress, accessToken },
+        logger: false
+      });
+    } else if (emailAccount.provider === 'outlook' || emailAccount.provider === 'hotmail' || emailAccount.provider === 'yahoo') {
+      const imapConfig = IMAP_CONFIG[emailAccount.provider as keyof typeof IMAP_CONFIG];
+      if (!imapConfig) return { emails: [] };
+
+      const password = decrypt(emailAccount.encryptedPassword || '');
+
+      imapClient = new ImapFlow({
+        host: imapConfig.host,
+        port: imapConfig.port,
+        secure: true,
+        auth: { user: emailAccount.emailAddress, pass: password },
+      });
+    } else {
+      return { emails: [] };
+    }
+
+    try {
+      await imapClient.connect();
+      const lock = await imapClient.getMailboxLock('INBOX');
+      try {
+        const uids = (await imapClient.search({ subject: trackingCode })) as number[];
+        if (uids && uids.length > 0) {
+          let messages = await imapClient.fetchAll(uids, {
+            envelope: true,
+            source: true
+          }, { uid: true });
+          for (let message of messages) {
+            if (message.source) {
+              const source = message.source.toString();
+              if (source.includes('<html') || source.includes('<HTML')) {
+                emails.push({
+                  id: String(message.uid),
+                  subject: message.envelope?.subject || '',
+                  from: message.envelope?.from?.[0]?.address || '',
+                  date: message.envelope?.date?.toString() || '',
+                  html: source,
+                });
+                break;
+              }
+            }
+          }
+        }
+      } finally {
+        lock.release();
+      }
+      await imapClient.logout();
+    } catch (error) {
+      console.error('Failed to search emails:', error);
+    }
+
+    return { emails };
+  },
+
+  parseEmailByCarrier(html: string, carrierCode: string): ParsedPackageData | null {
+    if (carrierCode === 'CHRONOPOST') {
+      return parseChronopostEmail(html);
+    } else if (carrierCode === 'MONDIAL') {
+      return parseMondialRelayEmail(html);
+    } else if (carrierCode === 'VINTEDGO-SHOP-FR') {
+      return parseVintedGoEmail(html);
+    }
+    return null;
+  },
+
+  async refreshGmailToken(refreshToken: string): Promise<{ access_token: string; expiry_date: number }> {
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
+    const { credentials } = await oauth2Client.refreshAccessToken();
+    return {
+      access_token: credentials.access_token || '',
+      expiry_date: credentials.expiry_date || 0,
+    };
   },
 };

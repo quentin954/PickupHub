@@ -205,9 +205,7 @@ export class PackageService {
       }
 
       if (shipmentInfo.journey_summary?.status === 'available_for_pickup') {
-        const trackingCode = shipmentInfo.journey_summary.current_carrier?.tracking_code?.slice(0, -2) ||
-          shipmentInfo.journey_summary.current_carrier?.tracking_code ||
-          '';
+        let trackingCode = shipmentInfo.journey_summary.current_carrier?.tracking_code || '';
         const carrierCode = shipmentInfo.journey_summary.current_carrier?.code;
 
         if (!trackingCode || !carrierCode) {
@@ -224,7 +222,59 @@ export class PackageService {
           continue;
         }
 
-        //
+        const emailAccount = await prisma.emailAccount.findUnique({ where: { userId } });
+
+        if (emailAccount) {
+          const { EmailService } = await import('./email.service');
+
+          if (emailAccount.provider === 'gmail' && emailAccount.encryptedAccessToken) {
+            if (emailAccount.expiresAt && new Date(emailAccount.expiresAt) < new Date()) {
+              const newTokens = await EmailService.refreshGmailToken(emailAccount.encryptedRefreshToken || '');
+              await prisma.emailAccount.update({
+                where: { userId },
+                data: {
+                  encryptedAccessToken: encrypt(newTokens.access_token),
+                  expiresAt: new Date(newTokens.expiry_date),
+                },
+              });
+            }
+          }
+
+          if ((emailAccount.provider === 'gmail' && emailAccount.encryptedAccessToken) ||
+              (['outlook', 'hotmail', 'yahoo'].includes(emailAccount.provider || '') && emailAccount.encryptedPassword)) {
+            const { emails } = await EmailService.searchEmails(userId, trackingCode);
+            log('info', `Found ${emails.length} emails for tracking code ${trackingCode}`, { userId });
+
+            for (const email of emails) {
+              if (email.html) {
+                const pickupDetails = EmailService.parseEmailByCarrier(email.html, carrierCode);
+
+                if (!existingPackage && (pickupDetails?.retrievalCode || pickupDetails?.qrCodeData)) {
+                  const newPackage = await prisma.package.create({
+                    data: {
+                      userId,
+                      orderId: existingOrder.id,
+                      trackingCode,
+                      carrierCode,
+                      trackingUrl: shipmentInfo.journey_summary.current_carrier?.tracking_url || '',
+                      carrierLogoUrl: shipmentInfo.journey_summary.current_carrier?.logo_url || '',
+                      lockerName: pickupDetails?.lockerName || '',
+                      lockerAddress: pickupDetails?.lockerAddress || '',
+                      lockerPostalCode: pickupDetails?.lockerPostalCode || '',
+                      lockerCity: pickupDetails?.lockerCity || '',
+                      retrievalCode: pickupDetails?.retrievalCode || null,
+                      qrCodeData: pickupDetails?.qrCodeData || null,
+                      status: 'available_for_pickup',
+                      expiryDate: pickupDetails?.expiryDate || null,
+                    },
+                  });
+                  log('info', `Package created from email`, { packageId: newPackage.id, userId });
+                  break;
+                }
+              }
+            }
+          }
+        }
 
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
